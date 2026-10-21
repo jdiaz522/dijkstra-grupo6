@@ -4,7 +4,7 @@ Aplicación web en Python (Streamlit) que resuelve el **problema del camino mín
 
 Proyecto del curso **Matemática Computacional (1AMA0726)**, Universidad Peruana de Ciencias Aplicadas (UPC), Grupo 6.
 
-**App en línea:** _pegar aquí el enlace de Streamlit Community Cloud_
+**App en línea:** https://dijkstra-grupo6.streamlit.app
 
 ## Qué hace
 
