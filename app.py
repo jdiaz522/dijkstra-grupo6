@@ -3,6 +3,7 @@
 Ejecutar con:  streamlit run app.py
 """
 import io
+from functools import partial
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -10,6 +11,7 @@ import streamlit as st
 
 from dijkstra import (contar_caminos, dijkstra_paso_a_paso, etiqueta,
                       reconstruir_caminos, texto_decision)
+from grafico_interactivo import CONFIG, animacion, figura_grafo
 from grafo import (INF, crear_grafo, encontrar_ciclo, generar_grafo_aleatorio,
                    matriz_pesos, niveles, nombres_vertices, orden_topologico,
                    validar_aristas)
@@ -25,9 +27,32 @@ EJEMPLO_LIBRO = [("A", "B", 2), ("A", "F", 1), ("B", "C", 2), ("B", "D", 2),
 
 
 # ---------------------------------------------------------------- utilidades
-def mostrar(fig):
-    st.pyplot(fig, clear_figure=True)
-    plt.close(fig)
+def mostrar(fig, key, **kwargs):
+    st.plotly_chart(fig, key=key, theme=None, width="stretch", config=CONFIG, **kwargs)
+
+
+def marcar_vertice(clave):
+    """Clic en el gráfico de la sección 2: marca el vértice como origen o destino."""
+    puntos = st.session_state[clave]["selection"]["points"]
+    letras = [p["customdata"][1] for p in puntos if (p.get("customdata") or [None])[0] == "v"]
+    if letras:
+        if st.session_state.get("modo_clic", "Origen") == "Origen":
+            st.session_state.sel_origen = letras[0]
+            st.session_state.modo_clic = "Destino"
+        else:
+            st.session_state.sel_destino = letras[0]
+    # con otro key el gráfico se vuelve a dibujar sin el punto seleccionado
+    st.session_state.clics = st.session_state.get("clics", 0) + 1
+
+
+@st.cache_data(show_spinner="Preparando la animación…")
+def animacion_cacheada(aristas, n, origen, destino):
+    """La animación tarda 1 a 2 s con 16 vértices; se guarda por grafo, origen y destino."""
+    grafo = crear_grafo(nombres_vertices(n), aristas)
+    pos = posiciones(grafo, niveles(grafo, orden_topologico(grafo)))
+    pasos, L, pred = dijkstra_paso_a_paso(grafo, origen, destino)
+    caminos = reconstruir_caminos(pred, origen, destino) if L[destino] != INF else None
+    return animacion(grafo, pos, pasos, origen, destino, caminos)
 
 
 def reiniciar_ejecucion():
@@ -139,7 +164,8 @@ with col_conf:
                             max_value=16, value=8, step=1))
     if st.session_state.get("n") != n:
         st.session_state.n = n
-        st.session_state.pop("base_manual", None)
+        for clave in ("base_manual", "sel_origen", "sel_destino"):
+            st.session_state.pop(clave, None)
         descartar_grafo()
     vertices = nombres_vertices(n)
     modo = st.radio("Forma de generar el grafo", ["Aleatoria", "Manual"], horizontal=True)
@@ -204,7 +230,19 @@ grafo, pos = st.session_state.grafo, st.session_state.pos
 st.header("2. Grafo dirigido ponderado")
 m = sum(len(a) for a in grafo.values())
 st.write(f"**{len(grafo)} vértices** y **{m} aristas**. El grafo es dirigido y no tiene ciclos.")
-mostrar(dibujar_grafo(grafo, pos, titulo="Representación gráfica etiquetada"))
+if st.session_state.get("sel_origen") not in vertices:
+    st.session_state.sel_origen = vertices[0]
+if st.session_state.get("sel_destino") not in vertices:
+    st.session_state.sel_destino = vertices[-1]
+st.radio("Al hacer clic en un vértice, marcarlo como:", ["Origen", "Destino"],
+         horizontal=True, key="modo_clic",
+         help="Pase el cursor por un vértice o un peso para ver sus datos.")
+clave_grafo = f"grafo_{st.session_state.get('clics', 0)}"
+mostrar(figura_grafo(grafo, pos, origen=st.session_state.sel_origen,
+                     destino=st.session_state.sel_destino,
+                     titulo="Representación gráfica etiquetada"),
+        key=clave_grafo, on_select=partial(marcar_vertice, clave_grafo),
+        selection_mode="points")
 with st.expander("Ver matriz de pesos"):
     st.dataframe(pd.DataFrame(matriz_pesos(grafo), index=list(grafo),
                               columns=list(grafo)).astype(str))
@@ -212,8 +250,8 @@ with st.expander("Ver matriz de pesos"):
 # ---------------------------------------------------------------- 3. origen y destino
 st.header("3. Selección de origen y destino")
 c1, c2, c3 = st.columns([1, 1, 1])
-origen = c1.selectbox("Vértice origen", vertices, index=0)
-destino = c2.selectbox("Vértice destino", vertices, index=len(vertices) - 1)
+origen = c1.selectbox("Vértice origen", vertices, key="sel_origen")
+destino = c2.selectbox("Vértice destino", vertices, key="sel_destino")
 c3.write("")
 if c3.button("Ejecutar Dijkstra", type="primary", disabled=(origen == destino)):
     pasos, _, _ = dijkstra_paso_a_paso(grafo, origen, destino)
@@ -236,82 +274,97 @@ respuestas = st.session_state.setdefault("respuestas", {})
 practica = st.toggle("Modo práctica: predice cada iteración antes de verla", key="practica",
                      help="Antes de avanzar, elige qué vértice se fija y qué etiquetas cambian. "
                           "El botón Siguiente se habilita cuando compruebas tu respuesta.")
-bloqueado = practica and k < ultimo and k not in respuestas
-b1, b2, b3, b4 = st.columns(4)
-b1.button("⏮ Reiniciar", on_click=ir_a, args=(0,), width="stretch")
-b2.button("◀ Anterior", on_click=ir_a, args=(k - 1,), disabled=k == 0, width="stretch")
-b3.button("Siguiente ▶", on_click=ir_a, args=(k + 1,), disabled=k == ultimo or bloqueado,
-          width="stretch")
-b4.button("Ver solución ⏭", on_click=ir_a, args=(ultimo,), disabled=k == ultimo or practica,
-          width="stretch")
-st.progress(k / ultimo if ultimo else 1.0, text=f"Iteración {k} de {ultimo}")
+tab_paso, tab_animacion = st.tabs(["Paso a paso", "▶ Animación"], key="pestana",
+                                  on_change="rerun")
+with tab_paso:
+    bloqueado = practica and k < ultimo and k not in respuestas
+    b1, b2, b3, b4 = st.columns(4)
+    b1.button("⏮ Reiniciar", on_click=ir_a, args=(0,), width="stretch")
+    b2.button("◀ Anterior", on_click=ir_a, args=(k - 1,), disabled=k == 0, width="stretch")
+    b3.button("Siguiente ▶", on_click=ir_a, args=(k + 1,), disabled=k == ultimo or bloqueado,
+              width="stretch")
+    b4.button("Ver solución ⏭", on_click=ir_a, args=(ultimo,), disabled=k == ultimo or practica,
+              width="stretch")
+    st.progress(k / ultimo if ultimo else 1.0, text=f"Iteración {k} de {ultimo}")
 
-col_fig, col_txt = st.columns([3, 2])
-with col_fig:
-    titulo = "Inicialización" if k == 0 else f"Iteración {k}: se fija el vértice {paso['seleccionado']}"
-    mostrar(dibujar_grafo(grafo, pos, paso=paso, origen=origen, destino=destino, titulo=titulo))
-with col_txt:
-    if k == 0:
-        st.markdown(f"**Inicialización.** L({origen}) = 0 y L(x) = ∞ para los demás vértices. "
-                    "Todas las etiquetas son temporales.")
-    else:
-        v = paso["seleccionado"]
-        L_v = paso["L"][v]
-        st.markdown(f"**Selección.** Entre los vértices temporales, **{v}** tiene la menor "
-                    f"etiqueta (L({v}) = {L_v}); su etiqueta pasa a ser **permanente**.")
-        if paso["decisiones"]:
-            st.markdown("**Actualización de etiquetas:**")
-            for d in paso["decisiones"]:
-                st.markdown("- " + texto_decision(v, L_v, d))
+    col_fig, col_txt = st.columns([3, 2])
+    with col_fig:
+        titulo = ("Inicialización" if k == 0 else
+                  f"Iteración {k}: se fija el vértice {paso['seleccionado']}")
+        mostrar(figura_grafo(grafo, pos, paso=paso, origen=origen, destino=destino,
+                             titulo=titulo), key="grafo_paso")
+    with col_txt:
+        if k == 0:
+            st.markdown(f"**Inicialización.** L({origen}) = 0 y L(x) = ∞ para los demás vértices. "
+                        "Todas las etiquetas son temporales.")
         else:
-            st.markdown(f"No salen aristas de {v}; no se actualiza ninguna etiqueta.")
-    temporales = ", ".join(sorted(paso["temporales"])) or "∅"
-    st.markdown(f"**T (temporales)** = {{{temporales}}}")
-    if k == ultimo:
-        if paso["L"][destino] == INF or destino in paso["temporales"]:
-            st.error(f"No quedan vértices alcanzables: no existe camino de {origen} a {destino}.")
-        else:
-            st.success(f"{destino} recibió etiqueta permanente: el algoritmo termina.")
-    st.dataframe(tabla_etiquetas(paso, origen), hide_index=True,
-                 height=35 * (len(grafo) + 1) + 3)
+            v = paso["seleccionado"]
+            L_v = paso["L"][v]
+            st.markdown(f"**Selección.** Entre los vértices temporales, **{v}** tiene la menor "
+                        f"etiqueta (L({v}) = {L_v}); su etiqueta pasa a ser **permanente**.")
+            if paso["decisiones"]:
+                st.markdown("**Actualización de etiquetas:**")
+                for d in paso["decisiones"]:
+                    st.markdown("- " + texto_decision(v, L_v, d))
+            else:
+                st.markdown(f"No salen aristas de {v}; no se actualiza ninguna etiqueta.")
+        temporales = ", ".join(sorted(paso["temporales"])) or "∅"
+        st.markdown(f"**T (temporales)** = {{{temporales}}}")
+        if k == ultimo:
+            if paso["L"][destino] == INF or destino in paso["temporales"]:
+                st.error(f"No quedan vértices alcanzables: no existe camino de {origen} a {destino}.")
+            else:
+                st.success(f"{destino} recibió etiqueta permanente: el algoritmo termina.")
+        st.dataframe(tabla_etiquetas(paso, origen), hide_index=True,
+                     height=35 * (len(grafo) + 1) + 3)
 
-# ---------------------------------------------------------------- modo práctica
-if practica and k < ultimo:
-    sig = pasos[k + 1]
-    candidatos = sorted(paso["temporales"])
-    correcto_v = sig["seleccionado"]
-    correctos_a = sorted(d["x"] for d in sig["decisiones"] if d["tipo"] in ("mejora", "empate"))
-    st.subheader(f"Desafío: ¿qué pasará en la iteración {k + 1}?")
-    with st.form(f"desafio_{k}"):
-        st.radio("1. ¿Qué vértice se vuelve permanente?", candidatos, index=None,
-                 horizontal=True, key=f"pv_{k}")
-        st.multiselect("2. ¿Qué vértices cambian su etiqueta (mejora o empate)? "
-                       "Déjalo vacío si crees que ninguno.", candidatos, key=f"pa_{k}",
-                       placeholder="Elige uno o más vértices")
-        st.form_submit_button("Comprobar", type="primary", on_click=comprobar,
-                              args=(k, correcto_v, correctos_a))
-    if "aviso_practica" in st.session_state and k not in respuestas:
-        st.warning(st.session_state.aviso_practica)
-    if k in respuestas:
-        r = respuestas[k]
-        L_min = paso["L"][correcto_v]
-        empatados = [x for x in candidatos if paso["L"][x] == L_min]
-        nota_empate = (f" Empata con {', '.join(e for e in empatados if e != correcto_v)}; "
-                       "se elige la letra menor." if len(empatados) > 1 else "")
-        if r["ok_v"]:
-            st.success(f"Correcto: {correcto_v} tiene la menor etiqueta temporal "
-                       f"(L = {L_min}).{nota_empate}")
-        else:
-            st.error(f"Era {correcto_v}: tiene la menor etiqueta temporal (L = {L_min})."
-                     f"{nota_empate}")
-        cambian = ", ".join(correctos_a) or "ninguno"
-        if r["ok_a"]:
-            st.success(f"Correcto: cambian {cambian}.")
-        else:
-            st.error(f"Cambian: {cambian}. Pulsa Siguiente para ver cada cálculo.")
-if practica and respuestas:
-    aciertos = sum(r["ok_v"] + r["ok_a"] for r in respuestas.values())
-    st.caption(f"Puntaje del modo práctica: {aciertos} de {2 * len(respuestas)} respuestas correctas.")
+    # ------------------------------------------------------------ modo práctica
+    if practica and k < ultimo:
+        sig = pasos[k + 1]
+        candidatos = sorted(paso["temporales"])
+        correcto_v = sig["seleccionado"]
+        correctos_a = sorted(d["x"] for d in sig["decisiones"] if d["tipo"] in ("mejora", "empate"))
+        st.subheader(f"Desafío: ¿qué pasará en la iteración {k + 1}?")
+        with st.form(f"desafio_{k}"):
+            st.radio("1. ¿Qué vértice se vuelve permanente?", candidatos, index=None,
+                     horizontal=True, key=f"pv_{k}")
+            st.multiselect("2. ¿Qué vértices cambian su etiqueta (mejora o empate)? "
+                           "Déjalo vacío si crees que ninguno.", candidatos, key=f"pa_{k}",
+                           placeholder="Elige uno o más vértices")
+            st.form_submit_button("Comprobar", type="primary", on_click=comprobar,
+                                  args=(k, correcto_v, correctos_a))
+        if "aviso_practica" in st.session_state and k not in respuestas:
+            st.warning(st.session_state.aviso_practica)
+        if k in respuestas:
+            r = respuestas[k]
+            L_min = paso["L"][correcto_v]
+            empatados = [x for x in candidatos if paso["L"][x] == L_min]
+            nota_empate = (f" Empata con {', '.join(e for e in empatados if e != correcto_v)}; "
+                           "se elige la letra menor." if len(empatados) > 1 else "")
+            if r["ok_v"]:
+                st.success(f"Correcto: {correcto_v} tiene la menor etiqueta temporal "
+                           f"(L = {L_min}).{nota_empate}")
+            else:
+                st.error(f"Era {correcto_v}: tiene la menor etiqueta temporal (L = {L_min})."
+                         f"{nota_empate}")
+            cambian = ", ".join(correctos_a) or "ninguno"
+            if r["ok_a"]:
+                st.success(f"Correcto: cambian {cambian}.")
+            else:
+                st.error(f"Cambian: {cambian}. Pulsa Siguiente para ver cada cálculo.")
+    if practica and respuestas:
+        aciertos = sum(r["ok_v"] + r["ok_a"] for r in respuestas.values())
+        st.caption(f"Puntaje del modo práctica: {aciertos} de {2 * len(respuestas)} respuestas correctas.")
+
+with tab_animacion:
+    if practica:
+        st.info("La animación se oculta en el modo práctica porque revelaría las respuestas. "
+                "Desactívalo para verla.")
+    elif tab_animacion.open:
+        st.caption("Use ▶ Play para recorrer las iteraciones o mueva el deslizador. "
+                   "El último cuadro muestra la solución.")
+        aristas = tuple(map(tuple, st.session_state.aristas))
+        mostrar(animacion_cacheada(aristas, len(grafo), origen, destino), key="animacion")
 
 # ---------------------------------------------------------------- 5. solución
 if k == ultimo:
@@ -332,11 +385,15 @@ if k == ultimo:
         opciones = ["Todos"] + [f"Camino {i}" for i in range(1, len(caminos) + 1)]
         elegido = st.selectbox("Resaltar sobre el grafo", opciones)
         marcados = caminos if elegido == "Todos" else [caminos[opciones.index(elegido) - 1]]
+        titulo = f"Camino(s) mínimo(s) de {origen} a {destino}"
+        mostrar(figura_grafo(grafo, pos, origen=origen, destino=destino, caminos=marcados,
+                             titulo=titulo), key="grafo_solucion")
+        # la imagen PNG para el informe se sigue haciendo con Matplotlib, sin mostrarla
         fig = dibujar_grafo(grafo, pos, origen=origen, destino=destino, caminos=marcados,
-                            titulo=f"Camino(s) mínimo(s) de {origen} a {destino}")
+                            titulo=titulo)
         imagen = io.BytesIO()
         fig.savefig(imagen, format="png", dpi=200, bbox_inches="tight")
-        mostrar(fig)
+        plt.close(fig)
         df_caminos = pd.DataFrame([{
             "Camino": i, "Secuencia": " → ".join(c),
             "Pesos": " + ".join(str(grafo[a][b]) for a, b in zip(c, c[1:])),
